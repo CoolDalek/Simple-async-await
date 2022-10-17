@@ -7,6 +7,8 @@ trait Scheduler extends ExecutionContext:
 
   def shutdown(): Unit
 
+  def syncRequired: Boolean
+
 object Scheduler:
 
   def singleThreaded[T](app: Scheduler ?=> T): T =
@@ -32,6 +34,8 @@ object Scheduler:
     }
 
     def shutdown(): Unit = working = false
+    
+    def syncRequired: Boolean = false
 
   end SingleThreaded
 
@@ -66,6 +70,8 @@ object Scheduler:
     }
 
     def shutdown(): Unit = executor.shutdown()
+    
+    def syncRequired: Boolean = true
 
   end MultiThreaded
 

@@ -1,16 +1,13 @@
+import Fiber.State
+
 import java.util.concurrent.atomic.AtomicReference
 import scala.annotation.tailrec
 import scala.util.control.NonFatal
 
-trait Fiber[+T](protected val scheduler: Scheduler):
+import Fiber.State.*
 
-  enum State:
-    case New
-    case Running
-    case Done(result: Any)
-    case Failed(exc: Throwable)
-  import State.*
-  protected val state: AtomicReference[State] = AtomicReference[State](New)
+trait Fiber[+T](protected val scheduler: Scheduler):
+  protected val state = AtomicReference[State[Any]](New)
 
   final def start(): Unit =
     state.set(Running)
@@ -26,21 +23,36 @@ trait Fiber[+T](protected val scheduler: Scheduler):
 
   protected def run(): Unit
 
-  final def join(): T = joinEither().fold(
-    exc => throw exc,
-    identity,
-  )
+  inline def join(): T =
+    joinTo[Id]
 
   @tailrec
-  final def joinEither(): Either[Throwable, T] =
-    state.get() match
-      case New => Left(new IllegalStateException("Fiber is not started yet"))
-      case Running => scheduler.executeNext(); joinEither()
-      case Done(result) => Right(result.asInstanceOf[T])
-      case Failed(exc) => Left(exc)
-  end joinEither
+  final def joinTo[F[+_]](using fallible: Fallible[F]): F[T] =
+    import fallible.*
+
+    state.get().asInstanceOf[State[T]] match
+      case Running => scheduler.executeNext(); joinTo[F]
+      case Done(result) => succeeded(result)
+      case Failed(exc) => failed(exc)
+      case New => failed(new IllegalStateException("Fiber is not started yet"))
+  end joinTo
 
 object Fiber:
+
+  enum State[+T]:
+    case New extends State[Nothing]
+    case Running extends State[Nothing]
+    case Done[T](result: T) extends State[T]
+    case Failed(exc: Throwable) extends State[Nothing]
+  end State
+
+  given Fallible[State] with
+
+    inline def failed[T](exc: Throwable): State[T] = Failed(exc)
+
+    inline def succeeded[T](value: T): State[T] = Done(value)
+
+  end given
 
   def task[T](runnable: () => T)(using sch: Scheduler): Fiber[T] =
     new Fiber[T](sch):
@@ -50,25 +62,13 @@ object Fiber:
       end run
   end task
 
-  trait Completable[T] extends Fiber[T]:
-    import State.*
-
-    def complete(result: Either[Throwable, T]): Unit =
-      val witness = state.get()
-      val newState = result.fold(
-        exc => Failed(exc),
-        value => Done(value),
-      )
-      state.compareAndSet(witness, newState)
-    end complete
-
-  end Completable
-
   def race[T](left: Task[T], right: Task[T])(using sch: Scheduler): Fiber[T] =
-    new Completable[T] with Fiber[T](sch):
+    new Fiber[T](sch):
       def run(): Unit =
         def fire(task: Task[T]) = async {
-          complete(task.awaitEither)
+          val newState = task.awaitTo[State]
+          val oldState = state.get()
+          state.compareAndSet(oldState, newState)
         }.fork
         fire(left)
         fire(right)
