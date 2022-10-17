@@ -10,14 +10,14 @@ trait Scheduler extends ExecutionContext:
 object Scheduler:
 
   def singleThreaded[T](app: Scheduler ?=> T): T =
-    val scheduler = singleThreadedImpl()
+    val scheduler = SingleThreaded()
     val result = app(using scheduler)
     scheduler.executeNext()
     scheduler.shutdown()
     result
   end singleThreaded
 
-  private def singleThreadedImpl(): Scheduler = new:
+  private final class SingleThreaded extends Scheduler:
     import scala.collection.mutable
 
     private val tasks = mutable.Queue.empty[Runnable]
@@ -33,16 +33,16 @@ object Scheduler:
 
     def shutdown(): Unit = working = false
 
-  end singleThreadedImpl
+  end SingleThreaded
 
   def multiThreaded[T](app: Scheduler ?=> T): T =
-    val scheduler = multiThreadedImpl()
+    val scheduler = MultiThreaded()
     val result = app(using scheduler)
     scheduler.shutdown()
     result
   end multiThreaded
 
-  private def multiThreadedImpl(): Scheduler = new:
+  private final class MultiThreaded extends Scheduler:
     import java.util.concurrent.*
     // Unfortunately, FJP too good into hiding working queues, so this implementation utilize ThreadPoolExecutor
 
@@ -60,10 +60,13 @@ object Scheduler:
 
     def reportFailure(cause: Throwable): Unit = cause.printStackTrace()
 
-    def executeNext(): Unit = tasks.poll(10, TimeUnit.NANOSECONDS)
+    def executeNext(): Unit = if(!executor.isShutdown) {
+      val next = tasks.poll(1, TimeUnit.NANOSECONDS)
+      if(next != null) next.run()
+    }
 
     def shutdown(): Unit = executor.shutdown()
 
-  end multiThreadedImpl
+  end MultiThreaded
 
 end Scheduler

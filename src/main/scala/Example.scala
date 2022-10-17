@@ -2,13 +2,9 @@ object Example:
 
   def main(args: Array[String]): Unit =
     println("Singlethreaded execution")
-    Scheduler.singleThreaded {
-      test
-    }
+    Scheduler.singleThreaded(test)
     println("\nMultithreaded execution")
-    Scheduler.multiThreaded {
-      test
-    }
+    Scheduler.multiThreaded(test)
   end main
 
   def test(using Scheduler): Unit =
@@ -19,7 +15,7 @@ object Example:
       fast,
       slow,
     ).await
-    Thread.currentThread()
+    println(Thread.currentThread())
     println(s"Winner $winner")
   end test
 

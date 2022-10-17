@@ -16,19 +16,14 @@ object Task:
       self
     }
   end extension
-  
+
   extension [T](self: TaskFiber[T])
+    inline def joinEither(): Either[Throwable, T] = self.joinEither()
     inline def join(): T = self.join()
-  
-  def race[T](left: Task[T], right: Task[T])(using scheduler: Scheduler): Task[T] = {
-    val signal = Fiber.signal[T]
-    def complete(task: Task[T]) = async {
-      signal.complete(task.awaitEither)
-    }.start()
-    complete(left)
-    complete(right)
-    signal
-  }
+  end extension
+
+  inline def race[T](left: Task[T], right: Task[T])(using Scheduler): Task[T] =
+    Fiber.race(left, right)
 
   inline def async[T](f: => T)(using scheduler: Scheduler): Task[T] =
     Fiber.task(() => f)

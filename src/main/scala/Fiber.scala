@@ -12,8 +12,20 @@ trait Fiber[+T](protected val scheduler: Scheduler):
   import State.*
   protected val state: AtomicReference[State] = AtomicReference[State](New)
 
-  def start(): Unit
-  
+  final def start(): Unit =
+    state.set(Running)
+    scheduler.execute { () =>
+      try {
+        run()
+      } catch {
+        case NonFatal(exc) =>
+          state.set(Failed(exc))
+      }
+    }
+  end start
+
+  protected def run(): Unit
+
   final def join(): T = joinEither().fold(
     exc => throw exc,
     identity,
@@ -22,48 +34,45 @@ trait Fiber[+T](protected val scheduler: Scheduler):
   @tailrec
   final def joinEither(): Either[Throwable, T] =
     state.get() match
-      case New => throw new IllegalStateException("Fiber is not started yet")
+      case New => Left(new IllegalStateException("Fiber is not started yet"))
       case Running => scheduler.executeNext(); joinEither()
       case Done(result) => Right(result.asInstanceOf[T])
-      case Failed(exc) => Left(throw exc)
+      case Failed(exc) => Left(exc)
   end joinEither
 
 object Fiber:
 
   def task[T](runnable: () => T)(using sch: Scheduler): Fiber[T] =
     new Fiber[T](sch):
-      import State.*
-      def start(): Unit =
-        state.set(Running)
-        scheduler.execute { () =>
-          try {
-            val result = runnable()
-            state.set(Done(result))
-          } catch {
-            case NonFatal(exc) =>
-              state.set(Failed(exc))
-          }
-        }
-      end start
+      def run(): Unit =
+        val result = runnable()
+        state.set(State.Done(result))
+      end run
   end task
 
-  final class Signal[T](sch: Scheduler) extends Fiber[T](sch):
+  trait Completable[T] extends Fiber[T]:
     import State.*
-    override val state: AtomicReference[State] = AtomicReference[State](Running)
 
-    override def start(): Unit = ()
-    
-    def complete(result: Either[Throwable, T]): Unit = {
+    def complete(result: Either[Throwable, T]): Unit =
       val witness = state.get()
       val newState = result.fold(
         exc => Failed(exc),
         value => Done(value),
       )
       state.compareAndSet(witness, newState)
-    }
-    
-  end Signal
-  
-  def signal[T](using scheduler: Scheduler): Signal[T] = new Signal[T](scheduler)
+    end complete
+
+  end Completable
+
+  def race[T](left: Task[T], right: Task[T])(using sch: Scheduler): Fiber[T] =
+    new Completable[T] with Fiber[T](sch):
+      def run(): Unit =
+        def fire(task: Task[T]) = async {
+          complete(task.awaitEither)
+        }.fork
+        fire(left)
+        fire(right)
+      end run
+  end race
 
 end Fiber
